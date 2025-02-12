@@ -1,0 +1,161 @@
+version 1.0
+
+workflow LDSCWorkflow {
+    input {
+        Int RunLDSC_i
+        String gsutil_annot_url
+        String gsutil_output_path
+    }
+
+    Array[Int] chromosomes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+
+    call CopyFiles {
+        input:
+            RunLDSC_i = RunLDSC_i,
+            gsutil_annot_url = gsutil_annot_url
+    }
+
+    scatter (chromosome in chromosomes) {
+        call RunLDSC {
+            input:
+                RunLDSC_i = RunLDSC_i,
+                chromosome = chromosome,
+                bfile_archive = CopyFiles.bfile_archive,
+                annot_archive = CopyFiles.annot_archive,
+                github_repo_archive = CopyFiles.github_repo_archive
+        }
+
+        call CopyToGsutil {
+            input:
+                tarball = RunLDSC.output_tar,
+                gsutil_output_path = gsutil_output_path,
+                file_name = "custom_annot_" + chromosome
+        }
+    }
+}
+
+task CopyFiles {
+    input {
+        Int RunLDSC_i
+        String gsutil_annot_url
+    }
+
+    command <<<
+        echo "start copying"
+        mkdir -p /local_files/
+        mkdir -p /local_files/bfile
+        mkdir -p /local_files/annot
+        mkdir -p /local_files/github_repo
+        gsutil -m cp -r "gs://google_bucket_path/ldsc/wdl/1000G_EUR_Phase3_plink/" /local_files/bfile/
+        gsutil -m cp "~{gsutil_annot_url}*" /local_files/annot/
+        gsutil -m cp "gs://google_bucket_path/ldsc/list.txt" /local_files/annot/
+        gsutil -m cp -r "gs://google_bucket_path/ldsc/wdl/github/" /local_files/github_repo/
+
+        # Create archives of each directory
+        tar -czf bfile.tar.gz /local_files/bfile/
+        tar -czf annot.tar.gz /local_files/annot/
+        tar -czf github_repo.tar.gz /local_files/github_repo/
+    >>>
+
+    output {
+        File bfile_archive = "bfile.tar.gz"
+        File annot_archive = "annot.tar.gz"
+        File github_repo_archive = "github_repo.tar.gz"
+    }
+
+    runtime {
+        docker: "gcr.io/google.com/cloudsdktool/cloud-sdk:latest"
+        memory: "4 GB"
+        cpu: 1
+    }
+}
+
+task RunLDSC {
+    input {
+        Int RunLDSC_i
+        Int chromosome
+        File bfile_archive
+        File annot_archive
+        File github_repo_archive
+    }
+
+    command <<<
+        # Extract the archives
+        mkdir -p /local_files/
+        cd /local_files/
+        ls -l
+        tar -xzf ~{bfile_archive}
+        tar -xzf ~{annot_archive}
+        tar -xzf ~{github_repo_archive}
+        ls -l
+
+        # Using local copy of the LDSC repository
+        echo "print files"
+        ls -l
+        cd ./local_files/github_repo/github/ldsc/
+        ls -l
+
+        # Create and activate Conda environment
+        echo "start conda env"
+        source activate ldsc
+        
+        cd ..
+        
+        cd ..
+        cd ..
+        cd ..
+
+        # Run LDSC script using the local file paths and specific chromosome
+        python ./local_files/github_repo/github/ldsc/ldsc.py --l2 \
+            --bfile ./local_files/bfile/1000G_EUR_Phase3_plink/1000G.EUR.QC.~{chromosome} \
+            --ld-wind-cm 1 \
+            --annot ./local_files/annot/custom_annot~{chromosome}.annot.gz \
+            --out ./local_files/custom_annot~{chromosome} \
+            --print-snps ./local_files/annot/list.txt
+
+        # Tarball the output
+        echo "start tar"
+        tar -czf ./custom_annot~{chromosome}.tar.gz ./local_files/custom_annot~{chromosome}*
+        echo "end tar"
+        ls -l
+        cp ./custom_annot~{chromosome}.tar.gz /cromwell_root/
+        cd /cromwell_root/
+        ls -l
+    >>>
+
+    output {
+        File output_tar = "custom_annot~{chromosome}.tar.gz"
+    }
+
+    runtime {
+        docker: "lifebitai/ldsc-pipe:latest"
+        memory: "32 GB"
+        cpu: 2
+        preemptible: 3
+    }
+}
+
+task CopyToGsutil {
+    input {
+        File tarball
+        String gsutil_output_path
+        String file_name
+    }
+
+    command <<<
+        # Unpack the tarball
+        cp ~{tarball} /cromwell_root/
+        ls -l
+        tar -xzf ~{tarball}
+        echo "post untar"
+        ls -l
+        # Copy the unpacked contents to the specified gsutil path
+        gsutil cp custom_annot* ~{gsutil_output_path}
+    >>>
+
+    runtime {
+        docker: "gcr.io/google.com/cloudsdktool/cloud-sdk:latest"
+        memory: "4 GB"
+        cpu: 1
+    }
+}

@@ -1,0 +1,81 @@
+version 1.0
+
+workflow mixscale {
+    input {
+        File r_script
+        File seurat_object_path
+        Array[String] perturbed_transcription_factors
+        String gsutil_output_path
+    }
+
+    scatter (tf in perturbed_transcription_factors) {
+        call RunmixscaleAnalysis {
+            input:
+                seurat_object_path = seurat_object_path,
+                r_script = r_script,
+                perturbed_transcription_factor = tf
+        }
+
+    call CopyToGsutil as CopyToGsutilBatch {
+            input:
+                file = RunmixscaleAnalysis.output_file,
+                destination = gsutil_output_path + "/" + tf + "_mixscale_results.RDS",
+                tf_name = tf
+    }
+}
+}
+task RunmixscaleAnalysis {
+    input {
+        File r_script
+        File seurat_object_path
+        String perturbed_transcription_factor
+    }
+
+    command <<<
+        cp /path/to/mixscale_script_only_final_step_for_Terra_WDL.R /cromwell_root/mixscale_script.R
+        apt-get update
+        apt-get -y install libfontconfig1-dev
+        apt-get -y install libharfbuzz-dev
+        apt-get -y install libfribidi-dev
+        apt-get -y install libfreetype6-dev 
+        apt-get -y install libpng-dev 
+        apt-get -y install libtiff5-dev
+        apt-get -y install libjpeg-dev
+        apt-get -y install build-essential
+        apt-get -y install libcurl4-gnutls-dev
+        apt-get -y install libxml2-dev
+        apt-get -y install libssl-dev
+        export PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/share/pkgconfig
+        ln -s /usr/lib/x86_64-linux-gnu/pkgconfig/libtiff.pc /usr/lib/x86_64-linux-gnu/pkgconfig/libtiff-4.pc
+        Rscript mixscale_script.R ~{seurat_object_path} ~{perturbed_transcription_factor}
+    >>>
+
+    output {
+        File output_file = "mixscale_results.RDS"
+    }
+
+    runtime {
+        docker: "bioconductor/bioconductor_docker:devel"
+        memory: "300 GB"
+        disks: "local-disk 100 HDD"
+        cpu: 8
+    }
+}
+
+task CopyToGsutil {
+    input {
+        File file
+        String destination
+        String tf_name
+    }
+
+    command <<<
+        gsutil cp ~{file} ~{destination}
+    >>>
+
+    runtime {
+        docker: "gcr.io/google.com/cloudsdktool/cloud-sdk:latest"
+        memory: "2 GB"
+        cpu: 1
+    }
+}
